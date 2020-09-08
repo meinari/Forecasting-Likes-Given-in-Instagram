@@ -1,0 +1,292 @@
+---
+title: "Forecasting of Intanohana's likes"
+author: "Meinari Claudia"
+datgete: "3/15/2020"
+output:  
+  html_document:
+    theme : cosmo
+    highlight : tango
+    toc: true
+    toc_depth: 3
+    toc_float: 
+        collapsed: false
+    number_sections: true
+    fig_caption: yes
+    df_print : paged 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(scipen = 9999)
+rm(list=ls())
+```
+
+# Introduction : Instagram
+Instagram is one of the most favorite media social that currently use right now among millenials. Here, I do analysis and forecasting of my friend instagram. The data is from instagram, by click `settings -> security -> download data`, as following picture :
+
+![](instagram.jpeg)
+
+# Basic Concept : Time Series
+## Time Series
+**Time series** is a method of analyzing and processing data which the values are affected by time. The action of predicting future values based on its value in the previous period of time is called **forecasting**. 
+The data which formatted into a time series (ts) object must have some charactersitics:  
+* no missing intervals  
+* no missing values  
+* data should be ordered by time
+
+## Exploratory Data Analysis (EDA)
+A ts object can be decomposed into 3 *main components* which will be calculated for forecasting. These components are :  
+- **trend (T)** : the movement of mean, globally,throughout an interval  
+- **seasonal (S)** : the pattern captured on each seasonal interval  
+- **error (E)** : the pattern /value that cannot be captured by both trend and seasonal.
+
+## Forecast Model
+There are few ways of forecasting in time series :  
+1. **Simple Moving Average (SMA)**  
+2. **Exponential Smoothing**  
+    - Simple exponential smoothing (SES): smoothing error  
+    - Double exponential smoothing (Holt): smoothing error and trend  
+    - Triple exponential smoothing (Holt Winters) : smoothing error, trend, & seasonal  
+. **ARIMA**
+
+## Forecasting & Evaluation
+Forecasting can be done by using `forecast ()` function from forecast package. Evaluation can be done by comparing **errors** of the prediction.
+
+## Assumption Check
+There are two assumption for a time series analysis :  
+1. **Normality** : Shapiro.test  
+    - H0 : residuals are normally distributed  
+    - H1 : residuals are not normally distributed  
+2. **Autocorrelations** :Box.test-Ljng-Box  
+    - H0 : No autocorrelations in the forecast errors  
+    - H1 : There is an autocorrelations in the forecast errors
+    
+## Multiple-seasonal Time Series
+There are cases that have multiple seasonal on their data and should be handled differently such as using seasonal time series approach (Seasonal ARIMA, etc)
+
+#Solution
+## Import Library
+
+```{r}
+library(lubridate) #to dea with data
+library(tidyverse) #for data wrangling 
+library(dplyr) #for data wrangling
+library(ggplot2) #for basic EDA
+library(TSstudio) #time series library
+library(padr) # for padding
+library(ggfortify)
+library(forecast) # for forecasting
+library(tseries) # for adf.test
+library(gridExtra) 
+library(MLmetrics)#for calculating error
+```
+
+
+## Read Data
+The data was obtained from *instagram* which contains of `Date` and `account_IG` that likes by *intan_ohana*'s account from *2016-11-20 until 2020-03-11*
+
+```{r}
+intan_1 <- read_csv("intan1.csv")
+intan_1
+str(intan_1)
+tail(intan_1)
+```
+
+## Data Preparation
+### Data Pre-processing
+
+```{r}
+#check if there is NA data
+colSums(is.na(intan_1))
+```
+There is no `NA` in the dataset.
+
+The `intan_1` data consists of 16384 observations and  2 variables. The description of each feature is explained below:
+
+* `Date` : Date when Intan gave like for IG_account.
+* `IG_account` : The IG account that liked by Intan.
+
+As a data scientist, I will develop a forecasting model that will forecast number of likes that will be given by Intan. Based on our data, we want to forecast the number of likes given by Intan for each IG_account. That's why we need to make a new variable (`total_likes`)
+
+
+### Basic EDA
+```{r}
+# Top IG account likes by Intan
+intan_likes <- intan_1 %>% 
+  group_by(IG_account) %>% 
+  summarise(likes_peraccount = n()) %>% 
+  ungroup() %>% 
+  mutate(IG_account = as.factor(IG_account))
+
+intan_likes_arrange <-  intan_likes %>% 
+  arrange(desc(likes_peraccount)) %>% # secara default ascending
+  head(10) 
+
+plot_top_likes <- ggplot(data = intan_likes_arrange, aes(x = reorder(IG_account, likes_peraccount),
+                                                         y = likes_peraccount, label = likes_peraccount)) +
+  geom_col(aes(fill= likes_peraccount), show.legend = T)+
+  coord_flip()+
+  theme_bw()+
+  theme(axis.text = element_text(size = 12), axis.title = element_text(size = 18, colour = "black"))+
+  geom_label(aes(fill = likes_peraccount),
+             colour = "white", 
+             fontface = "bold", 
+             size = 5, 
+             position = position_stack(0.8))+
+  labs(title = "Total Likes given by Intan", 
+       subtitle = "Top 10 IG account likes by Intan From 2017-2020",
+       x = "IG_Account",
+       y = "Total Likes")
+
+plot_top_likes
+```
+9gag is IG_account with the most total likes given by intan for 3 past year with **1389 likes** followed by `retnohening` **(936 likes)** and `dagelan` **(599 likes)**.
+
+
+### Data Aggregation and Rounding Variable
+
+In this step, beside I do data aggregation I also input missing value of total_likes with `0` to prevent if this IG account did not give `like` everyday, so we still have full series of date. 
+
+```{r}
+# grouping by and input missing value of date with 0
+intan_1 <- intan_1 %>%
+  mutate(hour = floor_date(Date, unit = "hours")) %>% 
+  group_by(hour) %>% 
+  summarise(total_likes = n()) %>% 
+  pad() %>% 
+  fill_by_value(total_likes, value = 0)
+
+intan_1
+```
+
+```{r}
+time_frame <- as_datetime(c("2016-11-20 15:00:00 UTC","2020-03-11 06:00:00 UTC"))
+all_hours <- data.frame(
+  like_hour = seq(time_frame[1], time_frame[2], by= "hour")
+)
+
+library(zoo)
+```
+
+
+
+```{r}
+range(intan_1$hour)
+```
+
+## Time series Object & EDA
+In this step I changed the format data into `ts` format.
+```{r}
+hourly_ts <- ts(data = intan_1$total_likes, start = c(2017,1), frequency = 24)
+
+```
+
+
+```{r}
+intan_ts_month <- ts(data = intan1$total_likes, start = c(2017,1), frequency = 12)
+class(intan_ts_month)#check the data class
+```
+
+
+```{r}
+#inspect data trend
+intan_ts %>% 
+  ts_plot(title = "Total Likes Given By Intan from Januari-1-2017 unitil March-12-2020")
+```
+**Note :**  
+1. There is no trend from total likes given by Intan  
+2. There is no seasonal trend from total likes given by Intan  
+
+### Decompose
+After I made the time series object for our `intan` data, I inspected our time series element of our `intan_ts` data. I want to look at the trend and seasonality pattern to choose the appropriate model for forecast `intan_ts` data. I used `decompose()` to know the trend, seasonality, and error of our time series data and visualize them using `autoplot()`.
+
+```{r}
+# decompose checking
+intan_dc <- intan_ts %>% decompose(type="additive")
+intan_dc %>% autoplot()
+```
+There is decreasing trend from semester II of 2017 until 2019 end. 
+
+## Cross Validation
+
+```{r}
+# test menggunakan `tail()`
+intan_test <- tail(intan_ts, 60)
+
+intan_train <- head(intan_ts, 
+                       length(intan_ts) - length(intan_test))
+length(intan_ts)
+length(intan_train)
+```
+
+## Model Building
+Based on the data inspection of decomposition there are trend and seasonal, using `Holt winters` and `Seasonal Arima`.
+
+```{r}
+#ets Holt-Winters
+intan_holt <- HoltWinters(x = intan_train)
+
+#arima
+intan_auto <- auto.arima(intan_train, seasonal = T)
+```
+
+## Forecast and Evaluation
+```{r}
+#forecast
+intan_holt_f <- forecast(intan_holt, h=60)
+intan_arima_f <- forecast(intan_auto, h=60)
+
+intan_holt_f
+intan_arima_f
+```
+
+```{r}
+#visualization
+plot_model_holt <- autoplot(intan_holt_f, series = "Holtwinters", fcol = "red")+
+  autolayer(intan_ts, series = "Actual", color = "black")+
+  labs(subtitle = "Likes given by Intan daily from 2017-01-01 until 2020-03-11",
+       y = "Total likes")+
+  theme_minimal()
+
+plot_model_arima <- autoplot(intan_arima_f, series = "Holtwinters", fcol = "red")+
+  autolayer(intan_ts, series = "Actual", color = "black")+
+  labs(subtitle = "Likes given by Intan daily from 2017-01-01 until 2020-03-11",
+       y = "Total likes")+
+  theme_minimal()
+
+grid.arrange(plot_model_holt,plot_model_arima)
+```
+`Holt-Winter` is better model that `auto-arima` in forecasting.
+
+```{r}
+#model evaluation : root mean squared error (RMSE)
+data.frame(ETS = RMSE(intan_holt_f$mean, intan_test), ARIMA = RMSE(intan_arima_f$mean, intan_test))
+```
+
+## Assumption Check
+**1. Normality** : Shapiro.test  
+  - H0 : residuals are normally distributed  
+  - H1 : residuals are not normally distributed
+  
+```{r}
+shapiro.test(intan_holt_f$residuals) #p-value < 0.05; reject H0; accept H1
+```
+
+```{r}
+hist(intan_holt_f$residuals, breaks = 20)
+hist(intan_arima_f$residuals, breaks = 20)
+```
+**2. Autocorrelation** : Box.test - Ljung-Box  
+  - H0: No autocorrelation in the forecast errors  
+  - H1: there is an autocorrelation in the forecast errors
+  
+```{r}
+Box.test(intan_holt_f$residuals, type = "Ljung-Box")
+```
+```{r}
+Box.test(intan_arima_f$residuals, type = "Ljung-Box")
+```
+
+Based on the assumption check, there is no autocorrelation on our forecast residuals (p-value > 0.05) in ARIMA model. Still, our forecast’s residuals are not distributed normally, therefore it’s residuals may not be appeared around its mean as seen in the histogram. 
+
+In a time series, such errors might emerge from various unpredictable events and is actually quite unavoidable. One strategy to overcome it is to analyze what kinds of unpredictable events that might occur and occurs frequently. This can be done by time series analysis using seasonality adjustment. From that insight, airports can develop an standard operational procedure and smart strategies for dealing with such events.
